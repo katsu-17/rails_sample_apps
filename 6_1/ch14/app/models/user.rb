@@ -1,4 +1,6 @@
 class User < ApplicationRecord
+  NOTIFICATION_INTERVAL_MINUTES = 5.minutes
+
   has_many :microposts, dependent: :destroy
   has_many :active_relationships, class_name:  "Relationship",
                                   foreign_key: "follower_id",
@@ -8,6 +10,7 @@ class User < ApplicationRecord
                                    dependent:   :destroy
   has_many :following, through: :active_relationships, source: :followed
   has_many :followers, through: :passive_relationships, source: :follower
+  has_many :notifications, dependent: :destroy
   attr_accessor :remember_token, :activation_token, :reset_token
   before_save   :downcase_email
   before_create :create_activation_digest
@@ -100,6 +103,39 @@ class User < ApplicationRecord
   # 現在のユーザーがフォローしてたらtrueを返す
   def following?(other_user)
     following.include?(other_user)
+  end
+
+  def upsert_notification(follower)
+    return if already_created?(follower)
+
+    merge_target_notification = Notification.where(user_id: self.id,
+                                                   notification_type: [Notification.notification_types[:follow], Notification.notification_types[:multiple_follows]],
+                                                   updated_at: NOTIFICATION_INTERVAL_MINUTES.ago..)
+                                            .order(updated_at: :desc).first
+    if merge_target_notification.present?
+      update_notification(merge_target_notification, follower)
+    else
+      create_notification(follower)
+    end
+  end
+
+  def already_created?(follower)
+    Notification.where(user_id: self.id).where("#{follower.id} = ANY (follower_ids)").present?
+  end
+
+  def update_notification(merge_target_notification, follower)
+    follower_ids = merge_target_notification.follower_ids
+    follower_ids.push(follower.id)
+    merge_target_notification.update(notification_type: Notification.notification_types[:multiple_follows],
+                                     follower_ids: follower_ids)
+  end
+
+  def create_notification(follower)
+    notification = Notification.new(user_id: self.id,
+                                    notification_type: Notification.notification_types[:follow],
+                                    follower_ids: [follower.id],
+                                    follower_name: follower.name)
+    notification.save
   end
 
   private
